@@ -227,6 +227,78 @@ async def test_aaaaatext_completion_endpoint(model_list, sync_mode):
     assert response.choices[0].text == "I'm fine, thank you!"
 
 
+def test_text_completion_deployment_model_alias_resolution():
+    """
+    Test that sync Router.text_completion correctly resolves deployment model
+    when model_name is an alias differing from litellm_params.model (#47775).
+    """
+    router = Router(
+        model_list=[
+            {
+                "model_name": "my-instruct-alias",
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo-instruct",
+                    "api_key": "fake",
+                    "mock_response": "resolved-ok",
+                },
+            }
+        ]
+    )
+
+    response = router.text_completion(
+        model="my-instruct-alias",
+        prompt="hello from alias",
+    )
+    assert response.model == "gpt-3.5-turbo-instruct"
+    assert response.choices[0].text == "resolved-ok"
+
+
+def test_text_completion_sync_fallbacks():
+    """
+    Test that sync Router.text_completion respects fallbacks on error (#47775).
+    """
+    from litellm.exceptions import RateLimitError
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "primary-instruct",
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo-instruct",
+                    "api_key": "fake",
+                },
+            },
+            {
+                "model_name": "backup-instruct",
+                "litellm_params": {
+                    "model": "gpt-3.5-turbo-instruct",
+                    "api_key": "fake",
+                    "mock_response": "backup-success",
+                },
+            },
+        ],
+        fallbacks=[{"primary-instruct": ["backup-instruct"]}],
+    )
+
+    original_text_completion = router._text_completion
+
+    def mock_fail_primary(model, prompt, **kwargs):
+        if model == "primary-instruct":
+            raise RateLimitError(
+                message="rate limit on primary",
+                model="primary-instruct",
+                llm_provider="openai",
+                response=None,
+            )
+        return original_text_completion(model, prompt, **kwargs)
+
+    router._text_completion = mock_fail_primary
+
+    response = router.text_completion(model="primary-instruct", prompt="test fallback")
+    assert response.choices[0].text == "backup-success"
+
+
+
 @pytest.mark.asyncio
 async def test_router_with_empty_choices(model_list):
     """
